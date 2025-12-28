@@ -1,0 +1,163 @@
+name: 💿 St1_Build-Rootfs-release
+on:
+  workflow_dispatch:
+    inputs:
+      build_version:
+        description: "请选择构建版本"
+        required: true
+        default: '20251205'
+        type: choice
+        options:
+          - '20251205'
+          - '20251128'
+          - '20251121'
+      network_settings:
+        description: "请选择初始网络配置"
+        required: true
+        default: 'dhcp'
+        type: choice
+        options:
+          - 'static'
+          - 'dhcp'
+      ipaddr:
+        description: '请输入管理IP（选择static时必填）'
+        required: true
+        default: '192.168.5.88'
+      gateway:
+        description: '请输入默认网关（选择static时必填）'
+        required: true
+        default: '192.168.5.1'
+
+env:
+  VERSION: 24.10.4
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: ⚙️ 设置可执行权限
+      run: | 
+        chmod +x arm64/build24.sh
+        chmod +x shell/*.sh
+
+    - name: ⚙️ 设置IP、网关和版本号
+      run: |
+        sed -i "s/版本号/${{ env.VERSION }}/g" "./files/etc/uci-defaults/99-custom.sh"
+        sed -i "s/版本号/${{ env.VERSION }}/g" "./files/etc/banner"
+        echo "当前网络配置路径"
+        CONFIG_PATH="./files/etc/uci-defaults/99-custom.sh"
+        echo $CONFIG_PATH
+        if [ "${{ inputs.network_settings }}" = "static" ]; then
+           echo "删除网络设置-dhcp"
+           sed -i '34,111d' "$CONFIG_PATH"
+           echo "替换默认配置"
+           sed -i "/ipaddr/s/192.168.5.88/${{ inputs.ipaddr }}/g" "$CONFIG_PATH"
+           sed -i "/gateway/s/192.168.5.1/${{ inputs.gateway }}/g" "$CONFIG_PATH"
+        else
+           echo "删除网络设置-static"
+           sed -i '26,32d' "$CONFIG_PATH"
+        fi
+        echo "输出配置"
+        cat $CONFIG_PATH
+
+    - name: ⏬ 安装依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses5-dev zstd curl unzip tree git  # 新增git依赖（克隆OAF需要）
+
+    - name: ⏬ 下载 ImageBuilder
+      run: |
+        curl -L -o imagebuilder.tar.zst https://github.com/Kwonelee/iStoreOS-Actions/releases/download/iStoreOS-ImageBuilder/${{ inputs.build_version }}-istoreos-imagebuilder-armsr-armv8.Linux-x86_64.tar.zst
+        tar --use-compress-program=unzstd -xvf imagebuilder.tar.zst
+        mv istoreos-imagebuilder-* imagebuilder
+
+    - name: ⏬ 复制并设置必备文件
+      run: |
+        cp arm64/{build24.sh,Makefile} imagebuilder/
+        #cp arm64/repositories.conf imagebuilder/
+        cp shell/{prepare-packages.sh,custom-packages.sh} imagebuilder/
+        find files/packages/ -name "*.ipk" -exec cp {} imagebuilder/packages/ \;
+        
+        mkdir -p imagebuilder/files/etc/{uci-defaults,banner1}
+        #添加开机启动脚本
+        cp files/etc/uci-defaults/99-custom.sh imagebuilder/files/etc/uci-defaults/
+        #替换O大打包脚本的默认banner
+        cp files/etc/banner imagebuilder/files/etc/banner1/
+        #临时解决通过晶晨宝盒写入emmc后根分区变为只读状态问题
+        cp files/etc/rc.local imagebuilder/files/etc/
+        
+        cd imagebuilder
+        echo "启用rootfs.tar.gz配置并停用非必要配置"
+        sed -i 's/# CONFIG_TARGET_ROOTFS_TARGZ is not set/CONFIG_TARGET_ROOTFS_TARGZ=y/' .config
+        sed -i "s|CONFIG_TARGET_ROOTFS_SQUASHFS=.*|# CONFIG_TARGET_ROOTFS_SQUASHFS is not set|g" .config
+        sed -i "s|CONFIG_TARGET_IMAGES_GZIP=.*|# CONFIG_TARGET_IMAGES_GZIP is not set|g" .config
+        echo "打印action目录结构"
+        tree -L 1
+
+    # ========== 新增：集成 OpenAppFilter 核心步骤 ==========
+    - name: 📥 克隆 OpenAppFilter 源码到 ImageBuilder
+      working-directory: ./imagebuilder
+      run: |
+        # 创建package目录（确保存在）
+        mkdir -p package/OpenAppFilter
+        # 克隆OAF源码
+        git clone https://github.com/destan19/OpenAppFilter.git package/OpenAppFilter
+        # 更新feeds确保依赖被识别
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: ⚙️ 开启 OpenAppFilter 编译选项
+      working-directory: ./imagebuilder
+      run: |
+        # 写入OAF编译配置（y表示集成到rootfs）
+        echo "CONFIG_PACKAGE_luci-app-oaf=y" >> .config
+        echo "CONFIG_PACKAGE_appfilter=y" >> .config
+        echo "CONFIG_PACKAGE_oaf=y" >> .config
+        # 自动补全依赖配置
+        make defconfig
+        # 验证配置是否生效（可选，便于排查问题）
+        cat .config | grep -E "luci-app-oaf|appfilter|oaf"
+    # ========== OAF 步骤结束 ==========
+
+    - name: 🧱 构建iStoreOS-rootfs
+      working-directory: ./imagebuilder
+      run: |
+        echo "打印imagebuilder目录结构"
+        tree -L 1
+        echo "打印repositories"
+        cat repositories.conf
+        echo "打印Makefile"
+        cat Makefile |grep here
+        bash ./build24.sh
+
+    - name: 📦 打印产出rootfs
+      run: |
+        echo "打印bin目录"
+        ls -lah imagebuilder/bin/targets/armsr/armv8/
+
+    - name: 🚀 上传到 Release
+      uses: softprops/action-gh-release@v2.2.1
+      with:
+        tag_name: iStoreOS-${{ env.VERSION }}-RELEASE-${{ inputs.network_settings }}
+        body: |
+          📌 版本： iStoreOS-${{ env.VERSION }}-RELEASE（imagebuilder构建，插件集成与官方一致）
+          
+          📂 来源： https://fw.koolcenter.com/iStoreOS/ib/armsr/
+          
+          🧠 内核： Please Login to iStoreOS → System → Amlogic Service → Replace the Kernel
+          
+          🧩 集成： 包含了基础系统组件、驱动、网络工具、容器支持、LuCI界面及插件等
+          🆕 新增： 集成 OpenAppFilter (OAF) 应用过滤插件
+          
+          👤 用户名： root
+          
+          🔒 密码： 无
+          
+          🌐 IP： ${{ inputs.network_settings == 'static' && inputs.ipaddr || '单网口-动态获取（从上级路由找寻）；多网口-IP：192.168.100.1' }}
+        files: |
+          imagebuilder/bin/targets/armsr/armv8/*generic-rootfs-oaf.tar.gz
+      env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
