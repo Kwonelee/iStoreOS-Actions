@@ -208,7 +208,7 @@ on:
           - dhcp
 
 env:
-  VERSION: 24.10.4
+  VERSION: 24.10.5
 
 jobs:
   build:
