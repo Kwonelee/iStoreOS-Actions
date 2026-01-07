@@ -218,7 +218,7 @@ jobs:
           echo "📦 正在下载预构建 rootfs"
           mkdir -p bin/targets/armsr/armv8
           curl -L -o bin/targets/armsr/armv8/openwrt-armvirt-64-default-rootfs.tar.gz \
-            https://github.com/${{ github.actor }}/iStoreOS-Actions/releases/download/iStoreOS-${{ env.VERSION }}-${{ inputs.openwrt_rootfs }}-${{ inputs.network_settings }}/istoreos-armsr-armv8-generic-rootfs.tar.gz
+            https://github.com/${{ github.actor }}/iStoreOS-bbccyc-Actions/releases/download/iStoreOS-${{ env.VERSION }}-${{ inputs.openwrt_rootfs }}-${{ inputs.network_settings }}/istoreos-armsr-armv8-generic-rootfs.tar.gz
 
       - name: 🔍 查找rootfs.tar.gz所在路径
         id: find_rootfs
